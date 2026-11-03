@@ -1,0 +1,21 @@
+[project]
+name = "comfyui-agentlink"
+version = "0.1.0"
+description = "Chat with an AI agent inside ComfyUI that builds and runs workflows for you. Bring your own API key; also exposes an MCP endpoint for Claude Code, Codex and Cursor."
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/Anking8704/ComfyUI-AgentLink"
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "ComfyUI-AgentLink"
+Icon = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
