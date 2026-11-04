@@ -224,6 +224,45 @@ async def configure(http):
     await http.post("/agentlink/config", json={"format": "openai", "base_url": "u", "model": "m", "api_key": "k"})
 
 
+async def test_chat_saves_character_followup_mcp_reads_it_after_fresh_server(http, store, client):
+    await configure(http)
+    provider = Recording(Reply("触发词是什么？", []), Reply("", [{"id": "save", "name": "save_character", "arguments": {
+        "record": {"character": "Hero", "model_path": "Style_A.safetensors", "aliases": ["勇者"],
+                   "trigger_words": ["hero_token"], "strength_model": 0, "strength_clip": 0}}}]), Reply("已记住。", []))
+    http.providers.append(provider)
+    await chat_events(http, "character", "记住勇者使用 Style_A.safetensors")
+    events = await chat_events(http, "character", "触发词是 hero_token，两个强度都是 0")
+    assert not next(e for e in events if e["type"] == "tool_result")["is_error"]
+    assert {"read_canvas", "patch_canvas", "undo_canvas", "save_character", "search_character_loras"} <= set(provider.seen[0]["tools"])
+    assert all(e.get("name") != "run_canvas" for e in events)
+    fresh = AgentLinkServer(client, ConfigStore(store.path))
+    routes = web.RouteTableDef()
+    fresh.add_routes(routes)
+    app = web.Application()
+    app.add_routes(routes)
+    async with TestClient(TestServer(app)) as restarted:
+        listing = await restarted.post("/agentlink/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        names = {t["name"] for t in (await listing.json())["result"]["tools"]}
+        assert {"list_characters", "search_character_loras", "read_character", "save_character"} <= names
+        assert not {"read_canvas", "patch_canvas", "undo_canvas", "show_in_canvas", "run_canvas"} & names
+        read = await restarted.post("/agentlink/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+            "name": "read_character", "arguments": {"character": "勇者"}}})
+        result = (await read.json())["result"]
+        assert not result["isError"]
+        record = json.loads(result["content"][0]["text"])
+        assert record["trigger_words"] == ["hero_token"]
+        assert record["strength_model"] == record["strength_clip"] == 0
+        assert fresh.characters.path == store.path.with_name("characters.json")
+
+
+async def test_character_mcp_write_rejects_foreign_origin_without_creating_storage(http, store):
+    result = await http.post("/agentlink/mcp", headers={"Origin": "https://foreign.example"}, json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "save_character", "arguments": {
+            "record": {"character": "Hero", "model_path": "Style_A.safetensors"}}}})
+    assert result.status == 403
+    assert not store.path.with_name("characters.json").exists()
+
+
 async def test_chat_tells_the_model_what_is_open_on_the_canvas(http):
     await configure(http)
     provider = Recording(Reply("ok", []))

@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from agentlink.agent import Agent
 from agentlink.llm import LLMError, Reply
@@ -173,3 +174,61 @@ async def test_reference_images_are_kept_on_the_user_turn(toolset):
 
 async def collect_with_images(agent, history, text, images):
     return [event async for event in agent.run(history, text, asyncio.Event(), images=images)]
+
+
+async def test_character_followup_save_read_and_inplace_patch_preserves_exact_record_and_target(client, comfy, tmp_path):
+    from agentlink.characters import CharacterStore
+    from agentlink.tools import PAGE_TOOLS, Toolset
+
+    exact_path = r"characters\Hero-v2.safetensors"
+    comfy.model_files["loras"] = [exact_path]
+    store = CharacterStore(tmp_path / "agentlink" / "characters.json")
+    toolset = Toolset(client, chat=True, characters=store)
+    record = {"character": "Hero", "aliases": ["勇者"], "model_path": exact_path,
+              "trigger_words": ["hero_token"], "strength_model": 0, "strength_clip": 0}
+    operations = [{"op": "set_widget", "node": "11", "widget": "lora_name", "value": exact_path},
+                  {"op": "set_widget", "node": "11", "widget": "strength_model", "value": 0},
+                  {"op": "set_widget", "node": "11", "widget": "strength_clip", "value": 0},
+                  {"op": "set_widget", "node": "6", "widget": "text", "value": "quality, hero_token, beach"}]
+    provider = ScriptedProvider(
+        Reply("", [call("find", "search_character_loras", {"query": "Hero"})]),
+        Reply("这个版本的触发词是什么？", []),
+        Reply("", [call("save", "save_character", {"record": record})]),
+        Reply("", [call("read", "read_character", {"character": "勇者", "model_path": exact_path})]),
+        Reply("", [call("canvas", "read_canvas", {})]),
+        Reply("", [call("patch", "patch_canvas", {"target": "inspected-root-7", "operations": operations})]),
+        Reply("已记住并修改。", []))
+    page_calls = []
+
+    async def page(request):
+        page_calls.append(request)
+        if request["name"] == "read_canvas":
+            return {"target": "inspected-root-7", "nodes": [
+                {"id": "11", "class_type": "LoraLoader", "values": {"lora_name": exact_path}},
+                {"id": "6", "class_type": "CLIPTextEncode", "values": {"text": "quality, beach"}}]}
+        if request["name"] == "patch_canvas":
+            return {"applied": 4, "target": "mutated-root-8", "undo_available": 1}
+        raise AssertionError(f"unexpected page operation: {request['name']}")
+
+    agent = Agent(provider, toolset, page_tools=PAGE_TOOLS, page_call=page)
+    history = []
+    first = await collect(agent, history, "查找 Hero 的 LoRA，先不要生成")
+    assert first[-2]["text"] == "这个版本的触发词是什么？"
+    discovery = json.loads(provider.calls[1]["messages"][2]["content"][0]["text"])
+    assert discovery["candidates"][0]["model_path"] == exact_path
+    assert discovery["candidates"][0]["record"] is None
+    assert not store.path.exists(), "lookup alone must not invent a record or triggers"
+    second = await collect(agent, history, "触发词是 hero_token，记住别名勇者，两种强度都用 0；修改画布但不要运行")
+    assert not any(e.get("is_error") for e in second)
+    assert page_calls[-1]["arguments"] == {"target": "inspected-root-7", "operations": operations}
+    final_messages = provider.calls[-1]["messages"]
+    by_id = {m["id"]: json.loads(m["content"][0]["text"]) for m in final_messages if m["role"] == "tool"}
+    assert by_id["read"]["model_path"] == exact_path
+    assert by_id["read"]["strength_model"] == by_id["read"]["strength_clip"] == 0
+    assert by_id["read"]["trigger_words"] == ["hero_token"]
+    assert by_id["canvas"]["target"] == "inspected-root-7"
+    assert by_id["patch"]["target"] == "mutated-root-8"
+    assert [c["name"] for c in page_calls] == ["read_canvas", "patch_canvas"]
+    assert not any(e.get("name") in {"run_canvas", "run_workflow", "show_in_canvas"} or e["type"] == "open_workflow" for e in first + second)
+    assert not comfy.posts
+    assert CharacterStore(store.path).read("勇者")["trigger_words"] == ["hero_token"]

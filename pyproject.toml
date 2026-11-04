@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-agentlink"
-version = "0.1.0"
+version = "0.2.0"
 description = "Chat with an AI agent inside ComfyUI that builds and runs workflows for you. Bring your own API key; also exposes an MCP endpoint for Claude Code, Codex and Cursor."
 license = { file = "LICENSE" }
 requires-python = ">=3.10"

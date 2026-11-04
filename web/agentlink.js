@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { createCanvasEditor } from "./canvas_edit.js";
 
 const PRESETS = [
   { id: "deepseek", label: "DeepSeek", format: "openai", base_url: "https://api.deepseek.com", vision: false },
@@ -35,7 +36,7 @@ const TEXT = {
     mcpTitle: "给外部 agent 用（MCP）", copy: "复制", copied: "已复制",
     remote: "AgentLink 只能在运行 ComfyUI 的这台电脑上使用。请用 http://127.0.0.1:{port} 打开 ComfyUI。",
     steps: {
-      read_canvas: "读取画布", edit_canvas: "修改参数", run_canvas: "提交生成",
+      read_canvas: "读取画布", edit_canvas: "修改参数", patch_canvas: "原地编辑", undo_canvas: "撤销修改", run_canvas: "提交生成",
       comfy_status: "查看状态", list_models: "查找模型", search_nodes: "搜索节点", get_node_schema: "查看节点选项",
       list_workflows: "查看工作流", read_workflow: "读取工作流", run_workflow: "运行工作流", get_job: "等待结果",
       get_image: "查看图片", upload_image: "上传图片", cancel_job: "取消任务", validate_workflow: "检查工作流",
@@ -64,7 +65,7 @@ const TEXT = {
     mcpTitle: "For outside agents (MCP)", copy: "Copy", copied: "Copied",
     remote: "AgentLink only works on the computer running ComfyUI. Open ComfyUI at http://127.0.0.1:{port}.",
     steps: {
-      read_canvas: "Read canvas", edit_canvas: "Change parameters", run_canvas: "Queue generation",
+      read_canvas: "Read canvas", edit_canvas: "Change parameters", patch_canvas: "Edit graph", undo_canvas: "Undo edit", run_canvas: "Queue generation",
       comfy_status: "Check status", list_models: "Find models", search_nodes: "Search nodes", get_node_schema: "Read node options",
       list_workflows: "List workflows", read_workflow: "Read workflow", run_workflow: "Run workflow", get_job: "Wait for result",
       get_image: "Look at image", upload_image: "Upload image", cancel_job: "Cancel job", validate_workflow: "Check workflow",
@@ -311,62 +312,48 @@ function nodeById(id) {
   return graph?.getNodeById?.(Number(id)) ?? graph?.getNodeById?.(id);
 }
 
+const canvasEditor = createCanvasEditor({
+  getGraph: currentGraph,
+  getWorkflow: () => app.extensionManager?.workflow?.activeWorkflow,
+  createNode: type => (globalThis.LiteGraph ?? globalThis.__COMFY_LITEGRAPH_INSTANCE__)?.createNode(type),
+  isValidConnection: (a, b) => {
+    const litegraph = globalThis.LiteGraph ?? globalThis.__COMFY_LITEGRAPH_INSTANCE__;
+    return litegraph?.isValidConnection?.(a, b) ?? (a === b || a === "*" || b === "*");
+  },
+  onChanged: () => app.extensionManager?.workflow?.activeWorkflow?.changeTracker?.checkState?.(),
+  canvas: () => app.canvas,
+});
+
 // Tools the agent calls through this page, because only the page holds the workflow the user has open.
 const PAGE_TOOLS = {
-  async read_canvas() {
-    const { output } = await app.graphToPrompt();
-    const nodes = Object.entries(output).map(([id, node]) => {
-      const values = {}, connections = {};
-      for (const [name, value] of Object.entries(node.inputs)) {
-        if (Array.isArray(value) && value.length === 2 && typeof value[1] === "number") connections[name] = `${value[0]}:${value[1]}`;
-        else values[name] = value;
-      }
-      return { id, class_type: node.class_type, title: node._meta?.title, values, connections };
-    });
-    const graph = currentGraph();
-    const disabled = (graph?._nodes ?? []).filter((n) => n.mode === 2 || n.mode === 4).map((n) => ({ id: String(n.id), type: n.type, mode: n.mode === 4 ? "bypassed" : "muted" }));
-    return { workflow: canvasSummary().name, nodes, disabled_nodes: disabled };
+  async read_canvas(_args, panel) {
+    const result = canvasEditor.read();
+    if (panel) panel.canvasTarget = result.target;
+    return { ...result, workflow: canvasSummary().name };
   },
 
-  async edit_canvas({ changes }) {
-    if (!changes || typeof changes !== "object") throw new Error('changes must map "node_id.input" to a value');
-    const applied = [], errors = [];
-    for (const [key, value] of Object.entries(changes)) {
+  async patch_canvas(args, panel) {
+    const result = canvasEditor.patch(args);
+    if (panel) panel.canvasTarget = result.target;
+    return result;
+  },
+
+  async undo_canvas(args, panel) {
+    const result = canvasEditor.undo(args);
+    if (panel) panel.canvasTarget = result.target;
+    return result;
+  },
+
+  async edit_canvas({ changes, target }, panel) {
+    if (!changes || typeof changes !== "object" || Array.isArray(changes)) throw new Error('changes must map "node_id.input" to a value');
+    const operations = Object.entries(changes).map(([key, value]) => {
       const dot = key.indexOf(".");
-      const id = key.slice(0, dot), input = key.slice(dot + 1);
-      const node = dot > 0 ? nodeById(id) : null;
-      if (!node) { errors.push(`${key}: no node ${id} on the canvas`); continue; }
-      if (node.inputs?.some((i) => i.name === input && i.link != null)) {
-        errors.push(`${key}: this input is connected to another node; change that node instead`);
-        continue;
-      }
-      const widget = node.widgets?.find((w) => w.name === input);
-      if (!widget) {
-        const linked = node.inputs?.find((i) => i.name === input && i.link != null);
-        errors.push(linked ? `${key}: this input is connected to another node; change that node instead`
-          : `${key}: node ${id} has no widget "${input}". Widgets: ${(node.widgets ?? []).map((w) => w.name).join(", ")}`);
-        continue;
-      }
-      let next = value;
-      const options = typeof widget.options?.values === "function" ? widget.options.values() : widget.options?.values;
-      if (Array.isArray(options) && !options.includes(next)) {
-        const close = options.filter((o) => String(o).toLowerCase().includes(String(next).toLowerCase().slice(0, 12))).slice(0, 8);
-        errors.push(`${key}: "${next}" is not an option${close.length ? `. Similar: ${close.join(", ")}` : ""}`);
-        continue;
-      }
-      if (widget.type === "number" || typeof widget.value === "number") {
-        next = Number(next);
-        if (Number.isNaN(next)) { errors.push(`${key}: needs a number`); continue; }
-      }
-      const before = widget.value;
-      widget.value = next;
-      widget.callback?.(widget.value, app.canvas, node);
-      applied.push({ key, from: before, to: next });
-    }
-    currentGraph()?.setDirtyCanvas?.(true, true);
-    app.extensionManager?.workflow?.activeWorkflow?.changeTracker?.checkState?.();
-    if (!applied.length && errors.length) throw new Error(errors.join("\n"));
-    return { applied, errors };
+      if (dot < 1) throw new Error(`Invalid widget key ${key}; use node_id.widget`);
+      return {op: "set_widget", node: key.slice(0, dot), widget: key.slice(dot + 1), value};
+    });
+    const result = canvasEditor.patch({target: target ?? panel?.canvasTarget, operations});
+    if (panel) panel.canvasTarget = result.target;
+    return { ...result, applied: Object.entries(changes).map(([key, to]) => ({key, to})), errors: [] };
   },
 
   async run_canvas({ count = 1 } = {}, panel) {
@@ -808,6 +795,7 @@ class AgentLinkPanel {
   async newChat() {
     const previousSession = this.session;
     this.session = crypto.randomUUID();
+    this.canvasTarget = null;
     this.controller?.abort();
     this.controller = null;
     this.setBusy(false);
@@ -947,6 +935,8 @@ function describeResult(event) {
   if (event.is_error) return event.text.split("\n")[0].slice(0, 200);
   try {
     const data = JSON.parse(event.text);
+    if (event.name === "patch_canvas") return `${data.applied} operations`;
+    if (event.name === "undo_canvas") return "↶";
     if (event.name === "read_canvas") return `${data.workflow} · ${t("nodes", { n: data.nodes.length })}`;
     if (event.name === "edit_canvas") return data.applied.map((c) => c.key).join("、") + (data.errors.length ? ` · ${data.errors.length} ✗` : "");
     if (event.name === "get_job") return data.status;

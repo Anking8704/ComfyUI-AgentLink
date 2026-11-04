@@ -36,24 +36,41 @@ To build a new workflow: search_nodes and get_node_schema for each node, write a
 ({"1": {"class_type": ..., "inputs": {...}}}, links as ["node_id", output_index]), check it with
 validate_workflow, then run_workflow(workflow=...) or save_workflow. Use list_models and search_nodes
 instead of guessing names; base models may sit in checkpoints, diffusion_models or unet, so search with
-list_models(query=...) rather than one folder. Call free_memory when done so models stop occupying RAM and VRAM."""
+list_models(query=...) rather than one folder. For named characters first search_character_loras; resolve ambiguity
+by exact installed model_path, read_character, and ask for unknown triggers/base-model compatibility instead of inventing
+them. save_character persists user-provided triggers/settings without another confirmation. list_characters inspects
+saved records. Character tools are local-only; no downloads. trigger_words=null is unknown, [] is confirmed none;
+preserve strength 0. These tools do not edit a browser canvas over MCP. Call free_memory when done so models stop
+occupying RAM and VRAM."""
 
 # Tools the ComfyUI page answers itself, because only it holds the workflow the user has open.
 PAGE_TOOLS = [
     {"name": "read_canvas",
      "description": "Read the workflow open on the user's ComfyUI canvas: its name and every node with id, class_type, title, "
-                    "current widget values and connections. Start here for any request to generate or change something.",
+                    "current widget values and named sockets, including incomplete nodes, plus a target token. Start here for any request to generate or change something.",
      "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "edit_canvas",
      "description": "Set widget values on the open canvas; the user sees the change live. changes maps \"node_id.input\" to a value, "
                     "e.g. {\"6.text\": \"1girl, beach, sunset\", \"3.steps\": 25, \"5.width\": 832}. Only widgets can be set, not connections. "
                     "Option inputs (sampler, model files) must use one of the node's options; get_node_schema lists them.",
-     "input_schema": {"type": "object", "properties": {"changes": {"type": "object"}}, "required": ["changes"]}},
+     "input_schema": {"type": "object", "properties": {"changes": {"type": "object"}, "target": {"type": "string"}}, "required": ["changes"]}},
     {"name": "run_canvas",
      "description": "Queue the open canvas workflow, like pressing Run, count times. Returns prompt_ids; wait for each with "
                     "get_job(prompt_id, wait_seconds). Seeds follow each node's control_after_generate setting. "
                     "The user sees progress and the images in the chat by themselves.",
      "input_schema": {"type": "object", "properties": {"count": {"type": "integer"}}, "required": []}},
+    {"name": "patch_canvas",
+     "description": "Transactionally edit the inspected root canvas in place. target comes from read_canvas or the last patch. "
+                    "operations: add_node(ref, class_type, widgets?, position?[x,y], near?node_id); "
+                    "remove_node(node); set_widget(node, widget, value); connect(from, output, to, input); disconnect(node, input). "
+                    "Each operation has op. Node references are existing string ids or unique temporary refs from earlier add_node. "
+                    "Connections use exact socket names. Replaces an existing input connection. Entire patch rolls back on failure; "
+                    "stale targets fail. Does not run or open a tab.",
+     "input_schema": {"type": "object", "properties": {"target": {"type": "string"}, "operations": {"type": "array", "items": {"type": "object"}}}, "required": ["target", "operations"]}},
+    {"name": "undo_canvas",
+     "description": "Undo the most recent AgentLink patch/edit as one unit on the inspected workflow. target from read_canvas or last mutation. "
+                    "Refuses if manual changes followed the edit; read_canvas does not override this protection.",
+     "input_schema": {"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}},
 ]
 PAGE_TOOL_NAMES = {tool["name"] for tool in PAGE_TOOLS}
 
@@ -164,12 +181,14 @@ def _runnable_prompt(data):
 class Toolset:
     TOOLS = ("comfy_status", "list_models", "search_nodes", "get_node_schema", "list_workflows", "read_workflow",
              "run_workflow", "get_job", "get_image", "upload_image", "cancel_job", "validate_workflow",
-             "save_workflow", "free_memory", "describe_image")
+             "save_workflow", "free_memory", "describe_image", "list_characters", "search_character_loras",
+             "read_character", "save_character")
     # Only useful when the agent runs inside the page that can show it.
     CHAT_TOOLS = ("show_in_canvas",)
 
-    def __init__(self, client, poll_interval=1.0, chat=False):
+    def __init__(self, client, poll_interval=1.0, chat=False, characters=None):
         self.client = client
+        self.characters = characters
         self.poll_interval = poll_interval
         self._object_info = {}
         names = self.TOOLS + (self.CHAT_TOOLS if chat else ())
@@ -200,6 +219,36 @@ class Toolset:
         if refresh or not self._object_info:
             self._object_info = await self.client.get_json("/object_info")
         return self._object_info
+
+    def _characters(self):
+        if self.characters is None:
+            raise ToolError("Character storage is not configured by the host")
+        return self.characters
+
+    async def list_characters(self, query: str = "", limit: int = 50) -> dict:
+        """List saved local character records, optionally filtering character, alias or model filename. Unknown fields are null."""
+        return {"records": self._characters().list(query, limit)}
+
+    async def search_character_loras(self, query: str, limit: int = 50) -> dict:
+        """Search saved character names/confirmed aliases and installed LoRA filenames. Exact names/aliases rank first.
+        Returns exact relative model paths, saved records and explicit local sidecar metadata when available.
+        Ask which candidate/version to use if ambiguous; never infer triggers from training tag frequency.
+        """
+        return self._characters().search(query, await self._model_files("loras"), limit)
+
+    async def read_character(self, character: str, model_path: str = "") -> dict:
+        """Read one saved character by exact name or alias. Supply exact model_path to disambiguate multiple LoRAs/versions."""
+        return self._characters().read(character, model_path)
+
+    async def save_character(self, record: dict) -> dict:
+        """Save/update a user-confirmed local character and exact installed LoRA. record requires character and model_path.
+        Optional: aliases (string list), trigger_words (string list; null unknown, [] confirmed none), appearance_prompt,
+        strength_model/strength_clip (numbers including 0), base_model, provenance. Unknown values are null.
+        Updates merge supplied fields for the exact character/model pair; lists replace previous lists. No downloads.
+        Save supplied missing triggers immediately without asking a second confirmation; do not invent fields.
+        """
+        saved = self._characters().save(record, await self._model_files("loras"))
+        return {"saved": True, "record": saved}
 
     async def _fetch_job(self, prompt_id):
         try:

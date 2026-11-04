@@ -14,13 +14,14 @@ async function check(fail) {
   vm.createContext(ctx);
   vm.runInContext(src.slice(src.indexOf('class AgentLinkPanel'), src.indexOf('\nfunction describeCall')) + '\nthis.Panel=AgentLinkPanel;', ctx);
   const p = Object.create(ctx.Panel.prototype);
-  Object.assign(p, {session: 'old', busy: false, input: {value: 'hi'}, config: {base_url: 'local', model: 'm'},
+  Object.assign(p, {session: 'old', canvasTarget:'previous-inspection', busy: false, input: {value: 'hi'}, config: {base_url: 'local', model: 'm'},
     items: [], steps: new Map(), generations: new Map(), attachments: [], renderAttachments() {}, autosize() {}, persist() {}, showWelcome() {}, closeOpenSteps() {},
     push(e) { events.push(e); }, setBusy(v) { this.busy = v; }, handle(e) { events.push(e); }});
   const running = p.send();
   while (!deliver) await new Promise(r => setImmediate(r));
   events.length = 0;
   await p.newChat();
+  assert.equal(p.canvasTarget,null,'new chat must require its own canvas inspection');
   assert.equal(p.busy, false, 'new chat must be ready immediately');
   p.busy = true; // A new request has started; the old finally must not clear it.
   if (fail) reject(new Error('old error'));

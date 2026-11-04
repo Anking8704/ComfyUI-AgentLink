@@ -26,6 +26,7 @@ def test_exposes_the_planned_tools(toolset):
         "comfy_status", "list_models", "search_nodes", "get_node_schema", "list_workflows", "read_workflow",
         "run_workflow", "get_job", "get_image", "upload_image", "cancel_job",
         "validate_workflow", "save_workflow", "free_memory", "describe_image",
+        "list_characters", "search_character_loras", "read_character", "save_character",
     }
 
 

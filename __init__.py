@@ -29,12 +29,15 @@ def _own_address():
 
 if PromptServer is not None:
     from .agentlink.client import ComfyClient
+    from .agentlink.characters import CharacterStore
     from .agentlink.server import AgentLinkServer, ConfigStore
 
     base_url, ssl = _own_address()
     AgentLinkServer(
         ComfyClient(base_url, ssl=ssl),
         ConfigStore(os.path.join(folder_paths.get_user_directory(), "agentlink", "config.json")),
+        characters=CharacterStore(os.path.join(folder_paths.get_user_directory(), "agentlink", "characters.json"),
+                                  resolve_model=lambda name: folder_paths.get_full_path("loras", name)),
     ).add_routes(PromptServer.instance.routes)
 
 WEB_DIRECTORY = "./web"

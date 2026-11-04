@@ -3,6 +3,7 @@ import asyncio
 import functools
 import json
 import os
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from aiohttp import web
@@ -10,9 +11,10 @@ from aiohttp import web
 from .agent import CHAT_INSTRUCTIONS, NSFW_INSTRUCTIONS, Agent
 from .llm import LLMError, make_provider
 from .errors import ToolError
+from .characters import CharacterStore
 from .tools import INSTRUCTIONS, PAGE_TOOL_NAMES, PAGE_TOOLS, Toolset
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 MCP_PATH = "/agentlink/mcp"
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
 FORMATS = {"openai", "anthropic"}
@@ -118,11 +120,14 @@ def _mcp_content(block):
 
 
 class AgentLinkServer:
-    def __init__(self, client, store, provider_factory=make_provider):
+    def __init__(self, client, store, provider_factory=make_provider, characters=None):
         self.store = store
         self.provider_factory = provider_factory
-        self.mcp_tools = Toolset(client)
-        self.chat_tools = Toolset(client, chat=True)
+        self.characters = characters
+        if self.characters is None and getattr(store, "path", None) is not None:
+            self.characters = CharacterStore(Path(store.path).with_name("characters.json"))
+        self.mcp_tools = Toolset(client, characters=self.characters)
+        self.chat_tools = Toolset(client, chat=True, characters=self.characters)
         self.sessions = {}
         self._provider = None
         self._provider_config = None
