@@ -57,8 +57,10 @@ PAGE_TOOLS = [
     {"name": "run_canvas",
      "description": "Queue the open canvas workflow, like pressing Run, count times. Returns prompt_ids; wait for each with "
                     "get_job(prompt_id, wait_seconds). Seeds follow each node's control_after_generate setting. "
-                    "The user sees progress and the images in the chat by themselves.",
-     "input_schema": {"type": "object", "properties": {"count": {"type": "integer"}}, "required": []}},
+                    "The user sees progress and the images in the chat by themselves. count is 1–8. "
+                    "Optional target from read_canvas binds generation to that graph. Stale canvases or stopped chats stop the batch; "
+                    "an already queued job is reported in the error and must not be queued again blindly.",
+     "input_schema": {"type": "object", "properties": {"count": {"type": "integer", "minimum": 1, "maximum": 8}, "target": {"type": "string"}}, "required": []}},
     {"name": "patch_canvas",
      "description": "Transactionally edit the inspected root canvas in place. target comes from read_canvas or the last patch. "
                     "operations: add_node(ref, class_type, widgets?, position?[x,y], near?node_id); "

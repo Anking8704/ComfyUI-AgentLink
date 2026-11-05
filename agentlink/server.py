@@ -14,7 +14,7 @@ from .errors import ToolError
 from .characters import CharacterStore
 from .tools import INSTRUCTIONS, PAGE_TOOL_NAMES, PAGE_TOOLS, Toolset
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 MCP_PATH = "/agentlink/mcp"
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
 FORMATS = {"openai", "anthropic"}

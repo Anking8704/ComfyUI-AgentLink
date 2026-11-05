@@ -356,11 +356,20 @@ const PAGE_TOOLS = {
     return { ...result, applied: Object.entries(changes).map(([key, to]) => ({key, to})), errors: [] };
   },
 
-  async run_canvas({ count = 1 } = {}, panel) {
-    const runs = Math.max(1, Math.min(8, Number(count) || 1));
+  async run_canvas({ count = 1, target } = {}, panel) {
+    if (!Number.isInteger(count) || count < 1 || count > 8) throw new Error('count must be an integer from 1 to 8');
+    const session = panel?.session, epoch = panel?.pageEpoch ?? 0;
+    const active = () => !panel || (panel.session === session && (panel.pageEpoch ?? 0) === epoch && !panel.stopped);
+    const check = () => {
+      if (!active()) throw new Error('Generation cancelled: the chat was stopped or replaced');
+      canvasEditor.assertCurrent(target);
+    };
+    target = target ?? panel?.canvasTarget ?? canvasEditor.read().target;
     const ids = [];
-    for (let i = 0; i < runs; i++) {
+    for (let i = 0; i < count; i++) {
+      check();
       const prompt = await app.graphToPrompt();
+      check();
       let result;
       try {
         result = await api.queuePrompt(0, prompt);
@@ -371,8 +380,17 @@ const PAGE_TOOLS = {
         throw new Error([body.error?.message ?? e?.message ?? String(e), ...nodes].join("\n"));
       }
       ids.push(result.prompt_id);
+      // The queue request may already have reached ComfyUI when stop/new-chat was pressed.
+      if (!active()) {
+        fetch(`/api/jobs/${encodeURIComponent(result.prompt_id)}/cancel`, { method: 'POST' }).catch(() => {});
+        throw new Error(`Generation cancelled: cancellation requested for queued job ${result.prompt_id}`);
+      }
       panel?.trackGeneration(result.prompt_id);
+      try { check(); }
+      catch (e) { throw new Error(`Job ${result.prompt_id} was queued. Remaining batch stopped: ${e.message}`); }
       applySeedControls();
+      target = canvasEditor.read().target;
+      if (panel) panel.canvasTarget = target;
     }
     return { prompt_ids: ids };
   },
@@ -795,6 +813,8 @@ class AgentLinkPanel {
   async newChat() {
     const previousSession = this.session;
     this.session = crypto.randomUUID();
+    this.pageEpoch = (this.pageEpoch ?? 0) + 1;
+    this.stopped = false;
     this.canvasTarget = null;
     this.controller?.abort();
     this.controller = null;
@@ -808,6 +828,8 @@ class AgentLinkPanel {
   }
 
   async stop() {
+    this.pageEpoch = (this.pageEpoch ?? 0) + 1;
+    this.stopped = true;
     // Stopping the chat also stops the images it queued; the user pressed stop to stop all of it.
     for (const item of this.generations.values()) {
       if (item.status === "queued" || item.status === "running") fetch(`/api/jobs/${item.id}/cancel`, { method: "POST" }).catch(() => {});
@@ -827,6 +849,7 @@ class AgentLinkPanel {
     this.attachments = [];
     this.renderAttachments();
     this.setBusy(true);
+    this.stopped = false;
     const session = this.session;
     const controller = new AbortController();
     this.controller = controller;
@@ -876,6 +899,7 @@ class AgentLinkPanel {
   async answerPage(event, session) {
     let reply;
     try {
+      if (session !== this.session || this.stopped) throw new Error('Page operation cancelled: the chat was stopped or replaced');
       reply = { result: await PAGE_TOOLS[event.name](event.arguments ?? {}, this) };
     } catch (e) {
       reply = { error: e?.message ?? String(e) };
@@ -884,6 +908,8 @@ class AgentLinkPanel {
   }
 
   handle(event, session = this.session) {
+    if (session !== this.session) return;
+    if (this.stopped && event.type === 'open_workflow') return;
     if (event.type === "text") {
       this.push({ k: "text", text: event.text });
     } else if (event.type === "tool_call") {

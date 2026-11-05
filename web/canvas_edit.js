@@ -183,5 +183,5 @@ export function createCanvasEditor({ getGraph, getWorkflow, createNode, isValidC
     }
     return {undone:true,target:inspect(c),undo_available:history.length};
   }
-  return {read,patch,undo};
+  return {read,patch,undo,assertCurrent: target => { checked(target); }};
 }

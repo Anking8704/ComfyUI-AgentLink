@@ -33,6 +33,8 @@
 
 修改绑定到读取时的工作流与图状态。若你在 agent 思考时切换标签页或手动修改，旧目标会被拒绝，需重新读取；撤销也会拒绝跨过后续手动修改。每个工作流在内存中保留最多 20 次 AgentLink 修改，刷新页面后清空。空图和未接完整的节点也可以读取。仅支持根画布；子图编辑不支持。自定义动态节点可能拒绝自动连线或控件值；可检测的错误会预先拒绝，执行异常会尝试整体回滚并明确报告失败，不能保证所有第三方节点的外部副作用都能撤销。
 
+批量生成（每次 1–8 张）也绑定到读取的画布。转换或提交期间若切换工作流、手动改图，剩余批次会停止，不会修改另一张图的种子。停止或新建对话会使旧的页面操作失效；若任务已在入队途中，收到任务编号后补发取消请求。已经完成的生成无法撤回；画布变化前已接受的任务会保留在进度中，错误会注明编号，避免重复提交。
+
 ### 本地角色 LoRA 记忆
 
 - 说“画勇者”时，agent 先查已记录的角色名、你确认的别名和本地 LoRA 文件名。多个候选、版本或同名文件需要你指定，记录使用完整相对模型路径。
@@ -87,6 +89,8 @@ Try successive requests: “Add a LoRA loader and connect model and CLIP; do not
 
 Edits are bound to the inspected workflow and graph state. Switching tabs or changing the graph makes an old target stale; the agent must reread. Undo refuses to cross later manual edits. Up to 20 AgentLink edits per workflow are retained in page memory and cleared on refresh. Empty/incomplete root graphs are readable. Subgraph editing is unsupported. Custom/dynamic nodes may reject connections or values: validation rejects detectable errors before mutation, and runtime failures attempt a full graph rollback with an explicit error. External side effects of third-party nodes cannot be guaranteed reversible.
 
+Generation batches (1–8 images) are bound to the inspected canvas too. Switching workflows or editing during conversion/submission stops the remaining batch without changing another graph's seeds. Stop and new chat invalidate earlier page operations; if submission was already in flight, its returned job id receives a cancellation request. Completed work cannot be recalled. A job accepted before a canvas change stays tracked and its id is included in the error to avoid duplicate submission.
+
 ### Local character LoRA memory
 
 - For a named character, the agent searches saved names, confirmed aliases and installed LoRA filenames first. Multiple models/versions or identical basenames require your choice; records use the exact installed relative path.
@@ -118,6 +122,7 @@ Canvas tools are page-only. Start with `read_canvas()`; use its `target` on muta
 | --- | --- |
 | `patch_canvas` | `target: string`, `operations: object[]` (1–100). Atomic graph edit; does not run or open a tab. |
 | `undo_canvas` | `target: string`. Undo the latest AgentLink mutation on the same unchanged graph. |
+| `run_canvas` | `count: int = 1` (1–8), optional `target: string` from inspection. Stops on stale state or a stopped/replaced chat; intentional seed changes refresh the next target. |
 | `list_characters` | `query: string = ""`, `limit: int = 50` (1–200). Returns `records`. |
 | `search_character_loras` | `query: string`, `limit: int = 50`. Returns ranked `candidates`, full `total`, `ambiguous`; truncation never hides ambiguity. Candidate fields include exact `model_path`, `installed`, optional saved `record` and explicit sidecar `metadata`/warning. |
 | `read_character` | `character: string` (exact name or alias), `model_path: string = ""`. Multiple records require the exact path. |
