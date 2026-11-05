@@ -1,3 +1,4 @@
+import asyncio
 import json
 from unittest import mock
 
@@ -113,7 +114,7 @@ async def test_chat_streams_agent_events_and_keeps_history(http):
     events = await chat_events(http, "s1", "hi")
     assert [e["type"] for e in events] == ["tool_call", "tool_result", "text", "done"]
     events = await chat_events(http, "s1", "more")
-    assert events[0] == {"type": "text", "text": "Again."}
+    assert {k: v for k, v in events[0].items() if k != "seq"} == {"type": "text", "text": "Again."}
 
 
 async def test_reset_clears_history(http):
@@ -338,3 +339,136 @@ async def test_images_alone_are_a_valid_message(http):
     http.providers.append(Recording(Reply("ok", [])))
     response = await http.post("/agentlink/chat", json={"session": "s1", "text": "", "images": [{"data": PNG_B64, "mime": "image/png", "name": "ref.png"}]})
     assert response.status == 200
+
+
+class GatedProvider(ScriptedProvider):
+    """Holds its second reply until the test opens the gate, like a slow model while the phone is away."""
+    def __init__(self, *replies):
+        super().__init__(*replies)
+        self.gate = asyncio.Event()
+        self.calls = 0
+
+    async def complete(self, system, messages, tools):
+        self.calls += 1
+        if self.calls == 2:
+            await self.gate.wait()
+        return await super().complete(system, messages, tools)
+
+
+async def read_until(response, kind):
+    events = []
+    while True:
+        line = (await response.content.readline()).decode()
+        if not line:
+            return events
+        if line.startswith("data: "):
+            events.append(json.loads(line[6:]))
+            if events[-1]["type"] == kind:
+                return events
+
+
+async def test_a_turn_keeps_running_after_the_page_disconnects_and_can_be_resumed(http):
+    await configure(http)
+    provider = GatedProvider(Reply("", [{"id": "c1", "name": "list_models", "arguments": {}}]), Reply("Finished while you were away.", []))
+    http.providers.append(provider)
+    response = await http.post("/agentlink/chat", json={"session": "s1", "text": "hi"})
+    first = await read_until(response, "tool_result")
+    assert [e["seq"] for e in first] == [1, 2]
+    response.close()  # the phone locks its screen
+    provider.gate.set()
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        resumed = await http.post("/agentlink/events", json={"session": "s1", "after": 2})
+        if resumed.headers["Content-Type"].startswith("text/event-stream"):
+            break
+    rest = await read_until(resumed, "done")
+    assert [(e["seq"], e["type"]) for e in rest] == [(3, "text"), (4, "done")]
+    assert rest[0]["text"] == "Finished while you were away."
+    caught_up = await http.post("/agentlink/events", json={"session": "s1", "after": 4})
+    assert (await caught_up.json()) == {"active": False}
+
+
+async def test_replayed_browser_tool_calls_are_marked_answered(http):
+    await configure(http)
+    http.providers.append(Recording(Reply("", [{"id": "c1", "name": "read_canvas", "arguments": {}}]), Reply("It has a sampler.", [])))
+    response = await http.post("/agentlink/chat", json={"session": "s1", "text": "what is open?"})
+    live = await read_until(response, "tool_call")
+    assert "answered" not in live[0]
+    await http.post("/agentlink/page_result", json={"session": "s1", "id": "c1", "result": {"nodes": []}})
+    await read_until(response, "done")
+    replay = await read_until(await http.post("/agentlink/events", json={"session": "s1", "after": 0}), "done")
+    assert replay[0]["type"] == "tool_call" and replay[0]["answered"] is True
+
+
+async def test_events_for_an_unknown_chat_report_nothing_to_resume(http):
+    response = await http.post("/agentlink/events", json={"session": "nope", "after": 0})
+    assert (await response.json()) == {"active": False}
+
+
+async def test_a_phone_that_drops_before_the_first_event_can_still_resume(http):
+    await configure(http)
+    provider = GatedProvider(Reply("thinking done", []))
+    provider.calls = 1  # gate the very first model call
+    http.providers.append(provider)
+    response = await http.post("/agentlink/chat", json={"session": "s1", "text": "hi"})
+    response.close()
+    resumed = await http.post("/agentlink/events", json={"session": "s1", "after": 0})
+    assert resumed.headers["Content-Type"].startswith("text/event-stream")
+    provider.gate.set()
+    events = await read_until(resumed, "done")
+    assert [e["type"] for e in events] == ["text", "done"]
+
+
+async def test_a_second_open_stream_never_runs_a_browser_tool_the_first_one_owns(http):
+    await configure(http)
+    http.providers.append(Recording(Reply("", [{"id": "c1", "name": "run_canvas", "arguments": {}}]), Reply("Queued.", [])))
+    first = await http.post("/agentlink/chat", json={"session": "s1", "text": "draw"})
+    live = await read_until(first, "tool_call")
+    assert "answered" not in live[0]
+    second = await http.post("/agentlink/events", json={"session": "s1", "after": 0})
+    duplicate = await read_until(second, "tool_call")
+    assert duplicate[0]["answered"] is True
+    first.close()  # the owner leaves without answering: the next stream may take the call over
+    await asyncio.sleep(0.05)
+    third = await http.post("/agentlink/events", json={"session": "s1", "after": 0})
+    takeover = await read_until(third, "tool_call")
+    assert "answered" not in takeover[0]
+    await http.post("/agentlink/page_result", json={"session": "s1", "id": "c1", "result": {"queued": 1}})
+    assert [e["type"] for e in await read_until(third, "done")][-1] == "done"
+
+
+async def test_page_calls_with_unreadable_arguments_are_never_run_by_the_page(http):
+    await configure(http)
+    http.providers.append(Recording(Reply("", [{"id": "c1", "name": "run_canvas", "arguments": None, "raw_arguments": "{bad"}]), Reply("Sorry.", [])))
+    response = await http.post("/agentlink/chat", json={"session": "s1", "text": "draw"})
+    events = await read_until(response, "done")
+    assert events[0]["type"] == "tool_call" and events[0]["answered"] is True
+
+
+async def test_reset_does_not_resurrect_history_already_being_written(http, store, monkeypatch):
+    import threading
+    from agentlink.history import HistoryStore
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    save = HistoryStore.save
+    def delayed_save(self, session, history):
+        started.set()
+        try:
+            assert release.wait(5)
+            save(self, session, history)
+        finally:
+            finished.set()
+    monkeypatch.setattr(HistoryStore, 'save', delayed_save)
+    await configure(http)
+    session = 'abcdef0123456789'
+    http.providers.append(Recording(Reply('finished', [])))
+    response = await http.post('/agentlink/chat', json={'session': session, 'text': 'hello'})
+    await read_until(response, 'done')
+    assert await asyncio.to_thread(started.wait, 2)
+    reset = asyncio.create_task(http.post('/agentlink/reset', json={'session': session}))
+    try:
+        await asyncio.sleep(.05)  # let the reset reach its handler while disk I/O is held
+    finally:
+        release.set()
+    assert (await reset).status == 200
+    assert await asyncio.to_thread(finished.wait, 2)
+    assert not (store.path.parent / 'sessions' / (session + '.json')).exists()

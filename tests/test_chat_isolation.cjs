@@ -8,7 +8,7 @@ async function check(fail) {
   let deliver, reject, reads = 0;
   const events = [];
   const ctx = {TextDecoder, AbortController, URL, crypto: require('node:crypto').webcrypto,
-    el: () => ({}), t: x => x, request: async () => ({}), canvasSummary: () => ({name: 'w', nodes: 0, types: []}),
+    el: () => ({}), t: x => x, newId: () => 'new', request: async () => ({}), canvasSummary: () => ({name: 'w', nodes: 0, types: []}),
     fetch: async () => ({ok: true, body: {getReader: () => ({cancel: async () => {},
       read: () => ++reads === 1 ? new Promise((r, j) => { deliver = r; reject = j; }) : Promise.resolve({done: true})})}})};
   vm.createContext(ctx);

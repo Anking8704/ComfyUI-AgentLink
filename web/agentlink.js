@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { createCanvasEditor } from "./canvas_edit.js";
+import { qrSvg } from "./qr.js";
 
 const PRESETS = [
   { id: "deepseek", label: "DeepSeek", format: "openai", base_url: "https://api.deepseek.com", vision: false },
@@ -33,6 +34,14 @@ const TEXT = {
     nsfw: "允许成人内容", nsfwNote: "只写成年角色；服务商是否照做由对方决定",
     save: "保存", test: "保存并测试", saved: "已保存", testing: "测试中…", ok: "连接成功", failedTest: "失败：",
     keyNote: "Key 只保存在这台电脑上，不会发给网页，也不会写进工作流。",
+    phoneTitle: "手机访问", phoneOn: "允许同一 Wi-Fi 下的手机使用", phoneOnNote: "手机第一次打开要输入配对码；Key 不会发到手机上",
+    pairCode: "配对码", codeValid: "{m} 分钟内有效，只能用一次", newCode: "换一个配对码", revoke: "让所有手机下线",
+    devices: "已配对 {n} 台手机", openOnPhone: "在手机浏览器打开：", noAddress: "没找到这台电脑的局域网地址",
+    scanToPair: "用手机相机扫码：自动配对并打开 AgentLink（安卓可选用 ComfyMobile 打开）", hintSendMobile: "点右侧按钮发送", reconnecting: "连接中断，正在重新连接…（电脑上的任务仍在继续）",
+    stillAnswering: "电脑上这段对话的上一条回复还在进行，继续显示它的进展；完成后再发送新消息。", lostReply: "连不上电脑，没能继续显示这条回复。回复可能已在电脑上完成，可稍后刷新页面查看。",
+    pairTitle: "连接电脑上的 AgentLink", pairSub: "在电脑上打开 AgentLink 设置 → 手机访问，输入那里显示的 6 位配对码。",
+    pairButton: "连接", pairFailed: "配对失败：", lanOff: "电脑上还没打开手机访问。在电脑的 AgentLink 设置里打开「手机访问」后再刷新这个页面。",
+    phoneSettings: "模型和 Key 只能在电脑上修改。", currentModel: "当前模型",
     mcpTitle: "给外部 agent 用（MCP）", copy: "复制", copied: "已复制",
     remote: "AgentLink 只能在运行 ComfyUI 的这台电脑上使用。请用 http://127.0.0.1:{port} 打开 ComfyUI。",
     steps: {
@@ -62,6 +71,14 @@ const TEXT = {
     nsfw: "Allow adult content", nsfwNote: "Adult characters only; whether the provider complies is up to them",
     save: "Save", test: "Save & test", saved: "Saved", testing: "Testing…", ok: "Connected", failedTest: "Failed: ",
     keyNote: "The key stays on this computer. It is never sent to the page or written into workflows.",
+    phoneTitle: "Phone access", phoneOn: "Let phones on the same Wi-Fi use AgentLink", phoneOnNote: "A phone enters a pairing code once; the key never reaches it",
+    pairCode: "Pairing code", codeValid: "Valid for {m} min, works once", newCode: "New pairing code", revoke: "Sign out all phones",
+    devices: "{n} phone(s) paired", openOnPhone: "Open on the phone:", noAddress: "No network address found for this computer",
+    scanToPair: "Scan with the phone camera: pairs and opens AgentLink (Android can open it in ComfyMobile)", hintSendMobile: "Tap the button to send", reconnecting: "Connection lost, reconnecting… (the computer keeps working)",
+    stillAnswering: "The computer is still answering an earlier message in this chat; following it. Send again when it finishes.", lostReply: "Could not reach the computer to follow this reply. It may have finished there; reload later to check.",
+    pairTitle: "Connect to AgentLink on your computer", pairSub: "On the computer, open AgentLink settings → Phone access and enter the 6-digit code shown there.",
+    pairButton: "Connect", pairFailed: "Pairing failed: ", lanOff: "Phone access is off. Turn it on in AgentLink settings on the computer, then reload this page.",
+    phoneSettings: "The model and key can only be changed on the computer.", currentModel: "Model",
     mcpTitle: "For outside agents (MCP)", copy: "Copy", copied: "Copied",
     remote: "AgentLink only works on the computer running ComfyUI. Open ComfyUI at http://127.0.0.1:{port}.",
     steps: {
@@ -198,6 +215,24 @@ background:linear-gradient(135deg,var(--p-primary-color,#6d7cff),#b16cff);box-sh
 .al-launch.al-on{box-shadow:0 0 0 3px var(--comfy-menu-bg,#1d1d20),0 0 0 5px var(--p-primary-color,#6d7cff)}
 .al-launch svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 @media (prefers-reduced-motion:reduce){.al-launch{transition:none}}
+.al-qr{display:flex;flex-direction:column;gap:6px}.al-qr-img svg{width:176px;height:176px;border-radius:6px;display:block}
+.al-code-big{font-size:30px;font-weight:700;letter-spacing:8px;font-variant-numeric:tabular-nums;color:var(--al-fg)}
+.al-pair{margin:auto 0;display:flex;flex-direction:column;gap:12px}.al-pair h3{margin:0;font-size:15px}.al-pair p{margin:0;color:var(--al-mute)}
+.al-pair input{font-size:24px;letter-spacing:8px;text-align:center;font-variant-numeric:tabular-nums}
+/* Phones: the window fills the screen, controls are finger-sized, and nothing drags. */
+@media (max-width:640px){
+.al-float{left:0!important;top:var(--al-vt,0px)!important;width:100vw!important;height:100vh!important;height:var(--al-vh,100dvh)!important;max-width:none;max-height:none;border-radius:0;border:0;resize:none}
+.al-float:not([hidden])~.al-launch{display:none}
+.al-head{padding-top:max(10px,env(safe-area-inset-top))}
+.al-compose{padding-bottom:max(12px,env(safe-area-inset-bottom))}
+.al-drag{cursor:default}
+.al-icon{width:42px;height:42px}.al-send{width:42px;height:42px}
+.al-box textarea,.al-input input,.al-input select{font-size:16px}
+.al-chip{padding:12px}
+.al-launch{right:16px;bottom:calc(88px + env(safe-area-inset-bottom));width:56px;height:56px}
+.al-presets{grid-template-columns:repeat(3,1fr)}
+.al-grid{grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
+}
 @media (prefers-reduced-motion:reduce){.al *{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
 `;
 
@@ -243,6 +278,11 @@ async function request(path, body) {
   return data;
 }
 
+// crypto.randomUUID only exists on https and localhost pages; a phone opens ComfyUI over plain http.
+function newId() {
+  return [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
@@ -279,6 +319,12 @@ async function shrink(file, side, quality) {
   canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
   return canvas.toDataURL("image/jpeg", quality);
+}
+
+async function asJpegFile(file) {
+  const url = await shrink(file, 2048, 0.92);
+  const blob = await (await fetch(url)).blob();
+  return new File([blob], (file.name || "photo").replace(/\.[^.]*$/, "") + ".jpg", { type: "image/jpeg" });
 }
 
 // The original goes into ComfyUI's input folder so a LoadImage node can use it.
@@ -415,7 +461,7 @@ function applySeedControls() {
 
 class AgentLinkPanel {
   constructor() {
-    this.session = crypto.randomUUID();
+    this.session = newId();
     this.busy = false;
     this.items = [];
     this.steps = new Map();
@@ -423,22 +469,52 @@ class AgentLinkPanel {
     this.shownImages = new Set();
     this.root = el("div", { class: "al" });
     this.root.append(this.buildHeader(), this.buildFeed(), this.buildComposer(), this.buildSheet());
+    this.lastSeq = 0;
+    this.turnOpen = false;
     this.listenToComfy();
     this.restore();
     this.init();
+    // A phone that slept or switched apps comes back to a reply that kept running on the computer.
+    document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && this.resume());
+    window.addEventListener("online", () => this.resume());
     setInterval(() => this.root.isConnected && this.updateContext(), 2000);
   }
 
   async init() {
     this.info = await request("/agentlink/info").catch(() => ({ local: false }));
-    if (!this.info.local) {
-      this.feed.replaceChildren(el("div", { class: "al-err" }, icon("alert"), t("remote", { port: location.port || "8188" })));
-      this.input.disabled = this.sendButton.disabled = true;
+    if (!this.info.local && !this.info.paired) {
+      this.showPairing();
       return;
     }
+    this.input.disabled = this.sendButton.disabled = false;
     this.config = await request("/agentlink/config");
     this.updateBadge();
-    if (!this.config.base_url || !this.config.model) this.openSettings();
+    if (this.turnOpen) this.resume();
+    if (this.info.local && (!this.config.base_url || !this.config.model)) this.openSettings();
+  }
+
+  showPairing() {
+    this.input.disabled = this.sendButton.disabled = true;
+    if (!this.info.lan) {
+      this.feed.replaceChildren(el("div", { class: "al-err" }, icon("alert"), t("lanOff")));
+      return;
+    }
+    const code = el("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", placeholder: "000000", "aria-label": t("pairCode") });
+    const status = el("div", { class: "al-status", role: "status" });
+    const submit = async () => {
+      try {
+        await request("/agentlink/pair", { code: code.value.trim() });
+        this.showWelcome();
+        await this.init();
+      } catch (e) {
+        status.textContent = t("pairFailed") + e.message;
+        status.className = "al-status al-bad";
+      }
+    };
+    code.addEventListener("keydown", (e) => e.key === "Enter" && submit());
+    this.feed.replaceChildren(el("div", { class: "al-pair" }, el("h3", {}, t("pairTitle")), el("p", {}, t("pairSub")),
+      el("div", { class: "al-input" }, code), el("button", { class: "al-btn al-pri", onclick: submit }, t("pairButton")), status));
+    code.focus();
   }
 
   buildHeader() {
@@ -474,9 +550,9 @@ class AgentLinkPanel {
     this.ctx = el("div", { class: "al-ctx" });
     this.attachments = [];
     this.attRow = el("div", { class: "al-atts" });
-    this.filePicker = el("input", { type: "file", accept: "image/png,image/jpeg,image/webp", multiple: true, hidden: true,
+    this.filePicker = el("input", { type: "file", accept: "image/*", multiple: true, hidden: true,
       onchange: () => { this.addImages([...this.filePicker.files]); this.filePicker.value = ""; } });
-    this.input = el("textarea", { rows: 1, placeholder: t("placeholder"), "aria-label": t("placeholder"),
+    this.input = el("textarea", { rows: 1, placeholder: t("placeholder"), "aria-label": t("placeholder"), enterkeyhint: "send",
       oninput: () => this.autosize(),
       onpaste: (e) => {
         const files = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
@@ -488,7 +564,7 @@ class AgentLinkPanel {
     this.acceptDrops();
     const attach = el("button", { class: "al-icon", onclick: () => this.filePicker.click(), title: t("attach"), "aria-label": t("attach") }, icon("clip"));
     return el("div", { class: "al-compose" }, el("div", { class: "al-box" }, this.ctx, this.attRow, this.input, this.filePicker,
-      el("div", { class: "al-row" }, attach, el("span", { class: "al-hint" }, t("hint")), this.sendButton)));
+      el("div", { class: "al-row" }, attach, el("span", { class: "al-hint" }, matchMedia("(pointer:coarse)").matches ? t("hintSendMobile") : t("hint")), this.sendButton)));
   }
 
   acceptDrops() {
@@ -511,13 +587,14 @@ class AgentLinkPanel {
 
   async addImages(files) {
     for (const file of files) {
-      if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) { this.push({ k: "error", text: t("notImage") }); continue; }
+      if (!file.type.startsWith("image/")) { this.push({ k: "error", text: t("notImage") }); continue; }
       if (this.attachments.length >= 4) { this.push({ k: "error", text: t("tooMany") }); break; }
       const attachment = { pending: true };
       this.attachments.push(attachment);
       this.renderAttachments();
       try {
-        const [forModel, thumb, name] = await Promise.all([shrink(file, 1280, 0.9), shrink(file, 160, 0.8), uploadToComfy(file)]);
+        const original = ["image/png", "image/jpeg", "image/webp"].includes(file.type) ? file : await asJpegFile(file);
+        const [forModel, thumb, name] = await Promise.all([shrink(original, 1280, 0.9), shrink(original, 160, 0.8), uploadToComfy(original)]);
         Object.assign(attachment, { pending: false, data: forModel.split(",")[1], mime: "image/jpeg", thumb, name });
       } catch (e) {
         this.attachments.splice(this.attachments.indexOf(attachment), 1);
@@ -552,7 +629,7 @@ class AgentLinkPanel {
   persist() {
     try {
       const items = this.items.slice(-80).map(({ node, bar, preview, ...rest }) => rest);
-      localStorage.setItem(STORE_KEY, JSON.stringify({ session: this.session, items }));
+      localStorage.setItem(STORE_KEY, JSON.stringify({ session: this.session, items, lastSeq: this.lastSeq, turnOpen: this.turnOpen }));
     } catch { /* storage full or blocked: the chat still works */ }
   }
 
@@ -561,6 +638,8 @@ class AgentLinkPanel {
     try { saved = JSON.parse(localStorage.getItem(STORE_KEY) || "null"); } catch { saved = null; }
     if (!saved?.items?.length) return;
     this.session = saved.session;
+    this.lastSeq = saved.lastSeq ?? 0;
+    this.turnOpen = !!saved.turnOpen;
     this.feed.replaceChildren();
     for (const item of saved.items) {
       if (item.k === "gen" && !["finished", "failed", "stoppedGen"].includes(item.status)) item.status = "stoppedGen";
@@ -727,6 +806,7 @@ class AgentLinkPanel {
 
   openSettings() {
     this.renderSettings();
+    this.renderPhone();
     this.sheet.classList.add("al-in");
     this.sheet.setAttribute("aria-hidden", "false");
     this.sheet.querySelector("input,select,button")?.focus();
@@ -740,6 +820,11 @@ class AgentLinkPanel {
 
   renderSettings() {
     const c = this.config || {};
+    if (!this.info?.local) {
+      this.sheetBody.replaceChildren(el("div", { class: "al-sec" }, el("b", {}, t("currentModel")),
+        el("div", {}, c.model || t("noModel")), el("div", { class: "al-small" }, t("phoneSettings"))));
+      return;
+    }
     const field = (label, control, extra) => el("label", { class: "al-field" }, label, el("div", { class: "al-input" }, control, extra));
     const format = el("select", {}, el("option", { value: "openai" }, t("openai")), el("option", { value: "anthropic" }, t("anthropic")));
     format.value = c.format || "openai";
@@ -791,13 +876,50 @@ class AgentLinkPanel {
         field(t("format"), format), field(t("baseUrl"), baseUrl), field(t("apiKey"), key, reveal), field(t("model"), model)),
       el("div", { class: "al-sec" }, sw(vision, t("vision"), t("visionNote")), sw(nsfw, t("nsfw"), t("nsfwNote"))),
       el("div", { class: "al-sec" }, el("div", { class: "al-row" }, testButton, saveButton), status, el("div", { class: "al-small" }, t("keyNote"))),
+      this.phoneBox = el("div", { class: "al-sec" }, el("b", {}, t("phoneTitle"))),
       el("details", { class: "al-sec" }, el("summary", { class: "al-small", style: "cursor:pointer" }, t("mcpTitle")),
         ...snippets.map(([name, text]) => el("div", { class: "al-sec", style: "margin-top:8px;gap:4px" }, el("div", { class: "al-small" }, name),
           el("div", { class: "al-snip" }, el("code", {}, text),
             el("button", { class: "al-icon", title: t("copy"), "aria-label": `${t("copy")} ${name}`, onclick: async (e) => {
-              await navigator.clipboard.writeText(text);
+              await navigator.clipboard?.writeText(text);
               e.currentTarget.title = t("copied");
             } }, icon("copy")))))));
+  }
+
+  async renderPhone(view) {
+    const box = this.phoneBox;
+    if (!box) return;
+    try { view ??= await request("/agentlink/lan"); } catch { return; }
+    const change = async (body) => this.renderPhone(await request("/agentlink/lan", body));
+    const toggle = el("input", { type: "checkbox", onchange: () => change({ enabled: toggle.checked }) });
+    toggle.checked = view.enabled;
+    const parts = [el("b", {}, t("phoneTitle")),
+      el("label", { class: "al-switch" }, toggle, el("span", {}, t("phoneOn"), el("small", {}, t("phoneOnNote"))))];
+    if (view.enabled) {
+      const port = location.port ? `:${location.port}` : "";
+      parts.push(
+        view.code ? el("div", {}, el("div", { class: "al-small" }, t("pairCode")), el("div", { class: "al-code-big" }, view.code),
+          el("div", { class: "al-small" }, t("codeValid", { m: Math.max(1, Math.ceil(view.expires_in / 60)) }))) : null,
+        view.code && view.addresses.length ? this.pairQr(view, port) : null,
+        el("div", { class: "al-small" }, view.addresses.length ? t("openOnPhone") : t("noAddress")),
+        ...view.addresses.map((ip) => el("div", { class: "al-snip" }, el("code", {}, `${location.protocol}//${ip}${port}`))),
+        el("div", { class: "al-small" }, t("devices", { n: view.devices })),
+        el("div", { class: "al-row", style: "flex-wrap:wrap" },
+          el("button", { class: "al-btn", onclick: () => change({ new_code: true }) }, t("newCode")),
+          view.devices ? el("button", { class: "al-btn", onclick: () => change({ revoke: true }) }, t("revoke")) : null));
+    }
+    box.replaceChildren(...parts.filter(Boolean));
+  }
+
+  /** A QR code of the pairing link, so a phone pairs by pointing its camera at the screen instead of typing. */
+  pairQr(view, port) {
+    // Prefer a typical home-network address; VPN and WSL adapters often use other ranges.
+    const address = view.addresses.find((a) => /^(192\.168\.|10\.)/.test(a)) ?? view.addresses[0];
+    const link = `${location.protocol}//${address}${port}/agentlink/pair?code=${view.code}&next=${encodeURIComponent("/?agentlink=open")}`;
+    let svg;
+    try { svg = qrSvg(link, 4); } catch { return null; }
+    return el("div", { class: "al-qr" }, el("div", { class: "al-small" }, t("scanToPair")), el("div", { class: "al-qr-img", html: svg }),
+      el("div", { class: "al-snip" }, el("code", {}, link)));
   }
 
   // ---------- chat ----------
@@ -812,10 +934,13 @@ class AgentLinkPanel {
 
   async newChat() {
     const previousSession = this.session;
-    this.session = crypto.randomUUID();
+    this.session = newId();
     this.pageEpoch = (this.pageEpoch ?? 0) + 1;
     this.stopped = false;
     this.canvasTarget = null;
+    this.lastSeq = 0;
+    this.turnOpen = false;
+    this.resumeController?.abort();
     this.controller?.abort();
     this.controller = null;
     this.setBusy(false);
@@ -853,36 +978,114 @@ class AgentLinkPanel {
     const session = this.session;
     const controller = new AbortController();
     this.controller = controller;
+    // A new turn starts at seq 0; saved now, so a reload before its first event does not skip any of it.
+    this.lastSeq = 0;
+    this.turnOpen = true;
+    this.persist();
+    let started = false;
     try {
       const response = await fetch("/agentlink/chat", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
         body: JSON.stringify({ session, text, images, canvas: canvasSummary() }) });
+      if (response.status === 409) {
+        // The computer is still answering an earlier message of this chat (sent before a dropped connection): follow it.
+        started = true;
+        this.push({ k: "note", text: t("stillAnswering") });
+        this.lastSeq = 0;
+        return;
+      }
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || `HTTP ${response.status}`);
       }
+      started = true;
+      await this.consume(response, session);
+    } catch (e) {
+      // Once the turn has started on the computer, a dropped connection is resumed rather than reported.
+      if (session === this.session && !started) {
+        this.turnOpen = false;
+        if (e.name !== "AbortError") this.push({ k: "error", text: e.message });
+      }
+    } finally {
+      if (session === this.session) {
+        this.controller = null;
+        if (this.turnOpen) this.resume(started ? 1000 : 0);
+        else { this.setBusy(false); this.closeOpenSteps(); this.persist(); }
+      }
+    }
+  }
+
+  /** Reads a chat event stream; returns when it ends. Seq numbers let a later reattach continue where this stopped. */
+  async consume(response, session) {
+    this.attached = true;
+    try {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
       for (;;) {
         const { value, done } = await reader.read();
-        if (session !== this.session) { await reader.cancel(); break; }
-        if (done) break;
+        if (session !== this.session) { await reader.cancel(); return; }
+        if (done) return;
         buffer += decoder.decode(value, { stream: true });
         let cut;
         while ((cut = buffer.indexOf("\n\n")) >= 0) {
           const chunk = buffer.slice(0, cut);
           buffer = buffer.slice(cut + 2);
-          if (chunk.startsWith("data: ")) this.handle(JSON.parse(chunk.slice(6)), session);
+          if (!chunk.startsWith("data: ")) continue;
+          const event = JSON.parse(chunk.slice(6));
+          if (event.seq) {
+            if (event.seq <= this.lastSeq) continue; // already shown (and, for page tools, already run)
+            this.lastSeq = event.seq;
+          }
+          if (event.type === "done") this.turnOpen = false;
+          this.handle(event, session);
+          if (event.type === "done") this.persist();
         }
       }
-    } catch (e) {
-      if (session === this.session && e.name !== "AbortError") this.push({ k: "error", text: e.message });
     } finally {
-      if (session === this.session) {
-        this.controller = null;
-        this.setBusy(false);
-        this.closeOpenSteps();
+      this.attached = false;
+    }
+  }
+
+  /** Reattaches to a reply that is still running on the computer (after sleep, app switch, network loss or reload). */
+  async resume(delay = 0) {
+    // One stream at a time: a second one would show every event twice and could run a canvas action twice.
+    if (!this.turnOpen || this.resuming || this.attached) return;
+    this.resuming = true;
+    const session = this.session;
+    const controller = new AbortController();
+    this.resumeController = controller;
+    this.setBusy(true);
+    const placeholder = this.input.placeholder;
+    if (delay) this.input.placeholder = t("reconnecting");
+    let gaveUp = false;
+    try {
+      let attempt = 0;
+      for (let wait = delay; this.turnOpen && session === this.session; attempt++, wait = Math.min(10000, (wait || 1000) * 2)) {
+        if (attempt >= 40) { gaveUp = true; break; }
+        if (wait) await new Promise((r) => setTimeout(r, wait));
+        if (session !== this.session || controller.signal.aborted || document.visibilityState === "hidden") break;
+        try {
+          const response = await fetch("/agentlink/events", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
+            body: JSON.stringify({ session, after: this.lastSeq }) });
+          // An older AgentLink on the computer cannot resume; the reply cannot be followed any further.
+          if ([403, 404, 405].includes(response.status)) { this.turnOpen = false; gaveUp = true; break; }
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          if (!(response.headers.get("Content-Type") || "").startsWith("text/event-stream")) { this.turnOpen = false; break; }
+          await this.consume(response, session);
+        } catch (e) {
+          if (e?.name === "AbortError") break;
+          /* still offline: try again shortly */
+        }
       }
+    } finally {
+      this.resuming = false;
+      if (this.resumeController === controller) this.resumeController = null;
+      this.input.placeholder = placeholder;
+      if (session === this.session && gaveUp) {
+        this.turnOpen = false;
+        this.push({ k: "note", text: t("lostReply") });
+      }
+      if (session === this.session && !this.turnOpen) { this.setBusy(false); this.closeOpenSteps(); this.persist(); }
     }
   }
 
@@ -918,7 +1121,8 @@ class AgentLinkPanel {
       group.steps.push(step);
       this.steps.set(event.id, { group, step });
       this.update(group);
-      if (PAGE_TOOLS[event.name]) this.answerPage(event, session);
+      // A replayed call that this page already answered before the connection dropped must not run twice.
+      if (PAGE_TOOLS[event.name] && !event.answered) this.answerPage(event, session);
     } else if (event.type === "tool_result") {
       const entry = this.steps.get(event.id);
       if (entry) {
@@ -983,11 +1187,29 @@ class FloatingWindow {
     try { saved = JSON.parse(localStorage.getItem(GEOMETRY_KEY) || "null"); } catch { saved = null; }
     this.place(saved ?? {});
     new ResizeObserver(() => !this.win.hidden && this.save()).observe(this.win);
+    // Phone browsers shrink only the visual viewport for the keyboard; follow it so the message box stays above the keys.
+    const viewport = window.visualViewport;
+    if (viewport) {
+      const follow = () => {
+        this.win.style.setProperty("--al-vh", `${Math.round(viewport.height)}px`);
+        this.win.style.setProperty("--al-vt", `${Math.round(viewport.offsetTop)}px`);
+      };
+      viewport.addEventListener("resize", follow);
+      viewport.addEventListener("scroll", follow);
+      follow();
+    }
     window.addEventListener("resize", () => this.place(this.geometry()));
     document.addEventListener("keydown", (e) => {
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.code === "KeyA") { e.preventDefault(); this.toggle(); }
     });
     if (saved?.open) this.toggle(true);
+    const params = new URLSearchParams(location.search);
+    if (params.get("agentlink") === "open") {
+      params.delete("agentlink");
+      const rest = params.toString();
+      history.replaceState(null, "", location.pathname + (rest ? `?${rest}` : "") + location.hash);
+      if (this.win.hidden) this.toggle(true);
+    }
   }
 
   geometry() {
@@ -1026,6 +1248,7 @@ class FloatingWindow {
   }
 
   drag(down) {
+    if (matchMedia("(max-width:640px)").matches) return;
     if (down.button !== 0 || down.target.closest("button,input,select,textarea,a")) return;
     // Capture the pointer on the handle: the canvas listens on the document and would swallow the moves.
     const handle = down.currentTarget;

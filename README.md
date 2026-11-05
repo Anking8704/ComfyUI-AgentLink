@@ -43,6 +43,12 @@
 - 记录位于 `<ComfyUI user dir>/agentlink/characters.json`，通常是 `ComfyUI/user/agentlink/characters.json`，不在插件安装目录。插件更新和 ComfyUI 重启后保留；请按需自行备份。损坏文件会报错并保持原文件，不会用空记录覆盖。不要把个人记录打包发布。
 - 仅发现本地已安装 LoRA，不下载模型、不连接线上账户，也不读取模型权重。可选读取模型同目录、同主文件名的 `.json` 侧文件（最多 64 KiB），仅接受明确的 `trigger_words`/`trainedWords` 字符串数组和 `base_model`/`baseModel`；忽略训练标签频率。侧文件不是执行指令，也不会自动写入记忆。
 
+### 手机上使用
+
+- 手机锁屏、切到别的应用或 Wi-Fi 短暂断开时，电脑上的任务会继续进行；回到页面后自动重新连接并补上错过的内容，已经执行过的画布操作不会重复执行。
+- ComfyUI 重启后，模型仍记得之前的对话（保存在 `ComfyUI/user/agentlink/sessions/`，不含图片，只保留最近 40 个对话；点“新对话”会删除该对话的记录）。
+- 手机上聊天窗口占满屏幕，输入框随键盘上移；键盘的回车键显示为“发送”。
+
 ### 模型要求
 
 - 必须支持 **工具调用**（function calling）。
@@ -51,7 +57,8 @@
 
 ### 安全
 
-- 只接受运行 ComfyUI 的这台电脑上的请求。开了局域网访问时，其他设备打不开聊天，也调用不了接口。
+- 默认只接受运行 ComfyUI 的这台电脑上的请求。开了局域网访问时，其他设备打不开聊天，也调用不了接口。
+- 手机访问（可选）：在电脑上打开 AgentLink 设置 → 手机访问，用手机相机扫设置里的二维码即可自动配对并打开 AgentLink（安卓上可选择用 ComfyMobile 打开）；也可以手机用同一 Wi-Fi 打开设置里显示的地址，输入 6 位配对码。配对码 10 分钟内有效、只能用一次，输错 5 次作废；配对后手机拿到一个随机令牌（存在 Cookie 里，电脑只存它的哈希）。手机只能聊天和出图，不能改模型设置或 Key，也看不到 Key；MCP 接口仍只限本机。关掉手机访问会让所有手机立即失效，“让所有手机下线”会清掉全部配对。
 - API Key 保存在 `ComfyUI/user/agentlink/config.json`，不会返回给网页，也不会写进工作流。
 
 ### 给外部 agent 用（MCP）
@@ -99,6 +106,12 @@ Generation batches (1–8 images) are bound to the inspected canvas too. Switchi
 - Records live at `<ComfyUI user dir>/agentlink/characters.json` (usually `ComfyUI/user/agentlink/characters.json`), outside the installation, and survive updates/restarts. Back them up as needed. Corrupt storage reports an error and remains intact instead of being overwritten with empty records. Do not publish personal records.
 - Discovery is local only: no downloads, online accounts, or weight loading. An optional same-directory, same-stem `.json` sidecar (up to 64 KiB) supplies explicit `trigger_words`/`trainedWords` string arrays and `base_model`/`baseModel`. Training-tag frequency is ignored. Sidecars are data, not instructions, and do not automatically create saved records.
 
+### On a phone
+
+- If the phone locks, switches apps or briefly loses Wi-Fi, the work keeps running on the computer; the page reconnects and catches up when you return, and canvas actions that already ran are not repeated.
+- After a ComfyUI restart the model still remembers earlier chats (saved in `ComfyUI/user/agentlink/sessions/` without images; the 40 most recent chats are kept; New chat deletes that chat's record).
+- On phones the chat fills the screen, the message box stays above the keyboard, and the keyboard's Enter key reads "send".
+
 ### Model requirements
 
 - Must support **tool calling** (function calling).
@@ -107,7 +120,8 @@ Generation batches (1–8 images) are bound to the inspected canvas too. Switchi
 
 ### Security
 
-- Only requests from the computer running ComfyUI are accepted, even when ComfyUI listens on the LAN.
+- By default only requests from the computer running ComfyUI are accepted, even when ComfyUI listens on the LAN.
+- Phone access (optional): turn it on under AgentLink settings → Phone access, then scan the QR code shown there with the phone camera to pair and open AgentLink (Android can open it in ComfyMobile); or open the shown address on a phone on the same Wi-Fi and enter the 6-digit code. A code lasts 10 minutes, works once and burns after 5 wrong tries; the phone then holds a random token in a cookie (only its hash is stored). Phones can chat and generate but cannot change the model or key, never see the key, and cannot use MCP. Turning phone access off locks all phones out; "Sign out all phones" removes every pairing.
 - The API key is stored in `ComfyUI/user/agentlink/config.json`; it is never sent back to the page or written into workflows.
 
 ### MCP for outside agents

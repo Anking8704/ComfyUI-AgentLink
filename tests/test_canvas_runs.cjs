@@ -12,7 +12,7 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
     let active=a, workflow={filename:'a'};
     const queued=[], tracked=[], cancelled=[], replies=[];
     const editor=createCanvasEditor({getGraph:()=>active,getWorkflow:()=>workflow,createNode:()=>null});
-    const ctx={canvasEditor:editor,currentGraph:()=>active,canvasSummary:()=>({name:workflow.filename}),t:key=>key,
+    const ctx={canvasEditor:editor,currentGraph:()=>active,canvasSummary:()=>({name:workflow.filename}),t:key=>key,newId:()=> 'chat-replaced',
       app:{graphToPrompt:async()=>({workflow:workflow.filename,output:{}})},
       api:{queuePrompt:async(_n,prompt)=>{queued.push(prompt);return {prompt_id:'job-'+queued.length};}},
       fetch:async(url)=>{cancelled.push(url);return {ok:true};},request:async(url,body)=>{replies.push({url,body});return {};},crypto:require('node:crypto').webcrypto};

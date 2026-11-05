@@ -1,8 +1,10 @@
 """HTTP routes AgentLink adds to ComfyUI: the chat sidebar's API and an MCP endpoint for outside agents."""
 import asyncio
 import functools
+import itertools
 import json
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -12,9 +14,11 @@ from .agent import CHAT_INSTRUCTIONS, NSFW_INSTRUCTIONS, Agent
 from .llm import LLMError, make_provider
 from .errors import ToolError
 from .characters import CharacterStore
+from .history import HistoryStore
+from .lan import LanAccess
 from .tools import INSTRUCTIONS, PAGE_TOOL_NAMES, PAGE_TOOLS, Toolset
 
-VERSION = "0.2.1"
+VERSION = "0.3.1"
 MCP_PATH = "/agentlink/mcp"
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
 FORMATS = {"openai", "anthropic"}
@@ -25,6 +29,16 @@ MAX_IMAGE_CHARS = 8 * 2**20
 
 # How long a browser tool may take; run_canvas returns as soon as the jobs are queued.
 PAGE_TIMEOUT = 120
+PAIR_FAILED_PAGE = (
+    "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
+    "<body style='font-family:sans-serif;padding:24px;line-height:1.6'><h2>配对没有成功 · Pairing failed</h2>"
+    "<p>配对码不对、已经用过或已过期（10 分钟），或者电脑上关闭了手机访问。请在电脑的 AgentLink 设置 → 手机访问里点“换一个配对码”，再扫一次。</p>"
+    "<p>The code is wrong, used or expired (10 minutes), or phone access is off. On the computer, open AgentLink settings → "
+    "Phone access, get a new code and scan again.</p>")
+KEEPALIVE = 15
+MAX_SESSIONS = 60
+# Where a pairing link may send the phone afterwards: a path on this server, nothing that a browser could read as another site.
+SAFE_NEXT = re.compile(r"/(?![/\\])[A-Za-z0-9/_\-.~?=&%]*")
 DEFAULT_CONFIG = {"format": "openai", "base_url": "", "model": "", "api_key": "", "vision": True, "nsfw": False}
 
 
@@ -45,6 +59,32 @@ def local_only(handler):
     @functools.wraps(handler)
     async def guarded(self, request):
         reason = is_local_request(request)
+        if reason:
+            return web.json_response({"error": reason}, status=403)
+        return await handler(self, request)
+    return guarded
+
+
+def _same_site(request):
+    """Why a phone's request is refused on page grounds, or None: it must come from ComfyUI's own page and be JSON."""
+    origin = request.headers.get("Origin")
+    if origin and urlsplit(origin).netloc != request.host:
+        return "Requests from other web pages are not allowed."
+    if request.method == "POST" and request.content_type != "application/json":
+        return "Requests must be JSON (Content-Type: application/json)."
+    return None
+
+
+def local_or_paired(handler):
+    """For the chat itself: this computer, or a phone paired under phone access. Settings stay local_only."""
+    @functools.wraps(handler)
+    async def guarded(self, request):
+        if (request.remote or "") in LOOPBACK:
+            reason = is_local_request(request)
+        elif not self.lan.is_paired(request.cookies.get(LanAccess.COOKIE)):
+            reason = "This device is not paired. On the computer, turn on phone access in the AgentLink settings and enter the pairing code here."
+        else:
+            reason = _same_site(request)
         if reason:
             return web.json_response({"error": reason}, status=403)
         return await handler(self, request)
@@ -120,8 +160,14 @@ def _mcp_content(block):
 
 
 class AgentLinkServer:
-    def __init__(self, client, store, provider_factory=make_provider, characters=None):
+    def __init__(self, client, store, provider_factory=make_provider, characters=None, lan=None, histories=None):
         self.store = store
+        if histories is None and getattr(store, "path", None) is not None:
+            histories = HistoryStore(str(Path(store.path).with_name("sessions")))
+        self.histories = histories
+        if lan is None and getattr(store, "path", None) is not None:
+            lan = LanAccess(Path(store.path).with_name("lan.json"))
+        self.lan = lan
         self.provider_factory = provider_factory
         self.characters = characters
         if self.characters is None and getattr(store, "path", None) is not None:
@@ -129,6 +175,7 @@ class AgentLinkServer:
         self.mcp_tools = Toolset(client, characters=self.characters)
         self.chat_tools = Toolset(client, chat=True, characters=self.characters)
         self.sessions = {}
+        self._stream_ids = itertools.count(1)
         self._provider = None
         self._provider_config = None
         self._provider_users = 0
@@ -136,10 +183,15 @@ class AgentLinkServer:
 
     def add_routes(self, routes):
         routes.get("/agentlink/info")(self.info)
+        routes.get("/agentlink/lan")(self.get_lan)
+        routes.post("/agentlink/lan")(self.set_lan)
+        routes.post("/agentlink/pair")(self.pair)
+        routes.get("/agentlink/pair")(self.pair_link)
         routes.get("/agentlink/config")(self.get_config)
         routes.post("/agentlink/config")(self.set_config)
         routes.post("/agentlink/test")(self.test_connection)
         routes.post("/agentlink/chat")(self.chat)
+        routes.post("/agentlink/events")(self.events)
         routes.post("/agentlink/stop")(self.stop)
         routes.post("/agentlink/reset")(self.reset)
         routes.post("/agentlink/page_result")(self.page_result)
@@ -179,11 +231,60 @@ class AgentLinkServer:
         return None
 
     async def info(self, request):
-        return web.json_response({"version": VERSION, "mcp_path": MCP_PATH, "local": is_local_request(request) is None})
+        local = is_local_request(request) is None
+        paired = not local and self.lan.is_paired(request.cookies.get(LanAccess.COOKIE))
+        return web.json_response({"version": VERSION, "mcp_path": MCP_PATH, "local": local, "paired": paired,
+                                  "lan": self.lan.view()["enabled"]})
 
     @local_only
+    async def get_lan(self, request):
+        return web.json_response(self.lan.view())
+
+    @local_only
+    async def set_lan(self, request):
+        body = await request.json()
+        if "enabled" in body:
+            view = self.lan.set_enabled(bool(body["enabled"]))
+        elif body.get("revoke"):
+            view = self.lan.revoke_all()
+        elif body.get("new_code"):
+            view = self.lan.new_code()
+        else:
+            view = self.lan.view()
+        return web.json_response(view)
+
+    async def pair(self, request):
+        reason = _same_site(request)
+        if reason:
+            return web.json_response({"error": reason}, status=403)
+        token = self.lan.pair((await request.json()).get("code", ""))
+        if token is None:
+            return web.json_response({"error": "Wrong or expired pairing code, or phone access is off. Get a new code on the computer."}, status=403)
+        response = web.json_response({"paired": True})
+        response.set_cookie(LanAccess.COOKIE, token, max_age=365 * 24 * 3600, httponly=True, samesite="Strict", path="/agentlink")
+        return response
+
+    async def pair_link(self, request):
+        """The link in the pairing QR code: a phone camera opens it, the code pairs the phone, and AgentLink opens."""
+        target = request.query.get("next", "/")
+        if not SAFE_NEXT.fullmatch(target):
+            target = "/"
+        if is_local_request(request) is None:
+            raise web.HTTPFound(target)
+        token = self.lan.pair(request.query.get("code", ""))
+        if token is None:
+            return web.Response(status=403, content_type="text/html", charset="utf-8", text=PAIR_FAILED_PAGE)
+        response = web.HTTPFound(target)
+        response.set_cookie(LanAccess.COOKIE, token, max_age=365 * 24 * 3600, httponly=True, samesite="Lax", path="/agentlink")
+        raise response
+
+    @local_or_paired
     async def get_config(self, request):
-        return web.json_response(public_config(self.store.load()))
+        view = public_config(self.store.load())
+        if (request.remote or "") not in LOOPBACK:
+            # A phone only needs to know which model answers; not even a hint of the key.
+            view.pop("key_hint")
+        return web.json_response(view)
 
     @local_only
     async def set_config(self, request):
@@ -224,7 +325,7 @@ class AgentLinkServer:
                 await self._release_provider(provider)
         return web.json_response({"ok": True, "reply": reply.text[:200]})
 
-    @local_only
+    @local_or_paired
     async def chat(self, request):
         body = await request.json()
         session_id, text = str(body.get("session") or ""), str(body.get("text") or "").strip()
@@ -235,45 +336,127 @@ class AgentLinkServer:
         if not session_id or not (text or images):
             return web.json_response({"error": "session and text are required"}, status=400)
         text = text or "(reference image)"
-        session = self.sessions.setdefault(session_id, {"history": [], "stop": asyncio.Event(), "busy": False, "pending": {}})
+        session = self._session(session_id)
         if session["busy"]:
             return web.json_response({"error": "This chat is still answering. Stop it or wait."}, status=409)
-        response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
-        await response.prepare(request)
-
-        async def send(event):
-            if event["type"] == "tool_call" and event["name"] in PAGE_TOOL_NAMES:
-                # Ready before the page hears of the call, so its answer can never arrive first.
-                session["pending"].setdefault(event["id"], asyncio.get_running_loop().create_future())
-            await response.write(f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8"))
-
         config = self.store.load()
+        session["events"], session["done"], session["owners"] = [], False, {}
         missing = self._missing_settings(config)
         if missing:
-            await send({"type": "error", "message": missing})
-            await send({"type": "done", "stopped": False})
-            return response
+            self._emit(session, {"type": "error", "message": missing})
+            self._emit(session, {"type": "done", "stopped": False})
+            session["done"] = True
+            return await self._stream(request, session, 0)
         session["busy"] = True
         session["stop"].clear()
+        note = canvas_note(body.get("canvas")) + reference_note(image_names, len(images), config.get("vision", True))
+        # The turn runs on its own: a phone that locks its screen or loses Wi-Fi for a moment can reattach and catch up
+        # through /agentlink/events instead of the work stopping with the connection.
+        session["task"] = asyncio.get_running_loop().create_task(self._run_turn(session, config, text + note, images))
+        return await self._stream(request, session, 0)
+
+    def _session(self, session_id):
+        if session_id not in self.sessions:
+            # After a restart the page still shows this chat; its saved history lets the model remember it too.
+            history = self.histories.load(session_id) if self.histories else []
+            idle = [k for k, v in self.sessions.items() if not v["busy"]]
+            for old in idle[:max(0, len(self.sessions) - MAX_SESSIONS + 1)]:
+                del self.sessions[old]  # the oldest idle chats; their history is on disk
+            self.sessions[session_id] = {"id": session_id, "history": history, "stop": asyncio.Event(), "busy": False, "pending": {},
+                                         "events": [], "done": True, "changed": asyncio.Event(), "task": None, "owners": {}}
+        return self.sessions[session_id]
+
+    def _emit(self, session, event):
+        if event["type"] == "tool_call" and event["name"] in PAGE_TOOL_NAMES and event.get("arguments") is not None:
+            # Ready before the page hears of the call, so its answer can never arrive first. Calls with unreadable
+            # arguments are refused by the agent itself, so the page must not run them.
+            session["pending"].setdefault(event["id"], asyncio.get_running_loop().create_future())
+        session["events"].append(event)
+        changed, session["changed"] = session["changed"], asyncio.Event()
+        changed.set()
+
+    async def _run_turn(self, session, config, text, images):
         provider = None
         try:
             provider = await self._get_provider(config)
             agent = Agent(provider, self.chat_tools, nsfw=config.get("nsfw", False), page_tools=PAGE_TOOLS,
                           page_call=functools.partial(self._ask_page, session))
-            note = canvas_note(body.get("canvas")) + reference_note(image_names, len(images), config.get("vision", True))
-            stream = agent.run(session["history"], text + note, session["stop"], images=images)
+            stream = agent.run(session["history"], text, session["stop"], images=images)
             try:
                 async for event in stream:
-                    await send(event)
+                    self._emit(session, event)
             finally:
                 await stream.aclose()
-        except ConnectionResetError:
-            session["stop"].set()
+        except Exception as e:  # noqa: BLE001 - the page must hear about any failure, then the turn ends
+            self._emit(session, {"type": "error", "message": f"{type(e).__name__}: {e}"})
+            self._emit(session, {"type": "done", "stopped": False})
         finally:
             session["busy"] = False
-            if provider is not None:
-                await self._release_provider(provider)
+            session["done"] = True
+            changed, session["changed"] = session["changed"], asyncio.Event()
+            changed.set()
+            try:
+                if provider is not None:
+                    await self._release_provider(provider)
+            finally:
+                # A chat that was reset (or replaced) meanwhile must not be written back.
+                if self.histories and self.sessions.get(session["id"]) is session:
+                    snapshot = list(session["history"])
+                    await asyncio.get_running_loop().run_in_executor(None, self.histories.save, session["id"], snapshot)
+
+    def _wire(self, session, event, seq, stream_id):
+        payload = dict(event, seq=seq)
+        if event["type"] == "tool_call" and event["name"] in PAGE_TOOL_NAMES:
+            future = session["pending"].get(event["id"])
+            owner = session["owners"].setdefault(event["id"], stream_id)
+            if future is None or future.done() or owner != stream_id:
+                # Answered already (before a dropped connection), or another open stream is running it: never run it twice.
+                payload["answered"] = True
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+    async def _stream(self, request, session, after):
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
+        await response.prepare(request)
+        seq = max(0, int(after))
+        # This stream follows one turn; when a new turn replaces the event list, it stops instead of mixing them.
+        events, stream_id = session["events"], next(self._stream_ids)
+        try:
+            while True:
+                changed = session["changed"]
+                while seq < len(events):
+                    event = events[seq]
+                    seq += 1
+                    await response.write(self._wire(session, event, seq, stream_id))
+                if session["done"] or session["events"] is not events:
+                    break
+                try:
+                    await asyncio.wait_for(changed.wait(), KEEPALIVE)
+                except asyncio.TimeoutError:
+                    await response.write(b": keepalive\n\n")
+        except (ConnectionResetError, ConnectionError):
+            pass  # The page left; the turn keeps running and can be picked up again.
+        finally:
+            # Calls this stream delivered but nobody answered yet may be taken over by the next stream that attaches.
+            for call_id, owner in list(session["owners"].items()):
+                future = session["pending"].get(call_id)
+                if owner == stream_id and future is not None and not future.done():
+                    del session["owners"][call_id]
         return response
+
+    @local_or_paired
+    async def events(self, request):
+        """Reattach to a chat turn: replays events after `after` (their seq numbers), then follows it live."""
+        body = await request.json()
+        session = self.sessions.get(str(body.get("session") or ""))
+        if session is None or (session["done"] and not session["events"]):
+            return web.json_response({"active": False})
+        try:
+            after = int(body.get("after") or 0)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "after must be a number"}, status=400)
+        if session["done"] and after >= len(session["events"]):
+            return web.json_response({"active": False})
+        return await self._stream(request, session, after)
 
     async def _ask_page(self, session, call):
         future = session["pending"].setdefault(call["id"], asyncio.get_running_loop().create_future())
@@ -284,7 +467,7 @@ class AgentLinkServer:
         finally:
             session["pending"].pop(call["id"], None)
 
-    @local_only
+    @local_or_paired
     async def page_result(self, request):
         body = await request.json()
         session = self.sessions.get(str(body.get("session")))
@@ -297,18 +480,26 @@ class AgentLinkServer:
             future.set_result(body.get("result"))
         return web.json_response({"accepted": True})
 
-    @local_only
+    @local_or_paired
     async def stop(self, request):
         session = self.sessions.get(str((await request.json()).get("session")))
         if session:
             session["stop"].set()
         return web.json_response({"stopping": bool(session)})
 
-    @local_only
+    @local_or_paired
     async def reset(self, request):
-        session = self.sessions.pop(str((await request.json()).get("session")), None)
+        session_id = str((await request.json()).get("session"))
+        session = self.sessions.pop(session_id, None)
         if session:
             session["stop"].set()
+            # A completed turn may still be saving in the disk executor. Delete only after
+            # that write finishes, otherwise it can recreate the chat after reset returns.
+            task = session.get("task")
+            if task is not None:
+                await asyncio.shield(task)
+        if self.histories and session_id not in self.sessions:
+            self.histories.delete(session_id)
         return web.json_response({"reset": True})
 
     @local_only
