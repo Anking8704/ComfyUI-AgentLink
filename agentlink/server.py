@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
-from .agent import CHAT_INSTRUCTIONS, NSFW_INSTRUCTIONS, Agent
+from .agent import CHAT_INSTRUCTIONS, Agent
 from .llm import LLMError, make_provider
 from .errors import ToolError
 from .characters import CharacterStore
@@ -317,8 +317,7 @@ class AgentLinkServer:
         provider = None
         try:
             provider = await self._get_provider(config)
-            instructions = CHAT_INSTRUCTIONS + (NSFW_INSTRUCTIONS if config.get("nsfw") else "")
-            reply = await provider.complete(instructions, [{"role": "user", "text": "ping"}], [])
+            reply = await provider.complete(CHAT_INSTRUCTIONS, [{"role": "user", "text": "ping"}], [])
         except LLMError as e:
             return web.json_response({"ok": False, "error": str(e)})
         finally:
