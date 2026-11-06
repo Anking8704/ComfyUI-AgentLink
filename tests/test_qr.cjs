@@ -28,7 +28,7 @@ function bmp(matrix, scale = 6, quiet = 4) {
   const { qrMatrix, reedSolomon, qrSvg } = await import(pathToFileURL(path.resolve('web/qr.js')).href);
   // "HELLO WORLD", version 1-M: the data codewords and their known error-correction codewords.
   assert.deepEqual(reedSolomon([32, 91, 11, 120, 209, 114, 220, 77, 67, 64, 236, 17, 236, 17, 236, 17], 10), [196, 35, 39, 119, 235, 215, 231, 226, 93, 23]);
-  const texts = ['123456', 'http://10.200.42.113:8188/agentlink/pair?code=042917&next=%2F%3Fagentlink%3Dopen',
+  const texts = ['123456', 'http://192.0.2.10:8188/agentlink/pair?code=042917&next=%2F%3Fagentlink%3Dopen',
     'http://192.168.100.200:8188/agentlink/pair?code=000001&next=%2F%3Fagentlink%3Dopen&extra=' + 'x'.repeat(70),
     '中文配对 ' + 'y'.repeat(150)];
   const sizes = texts.map((t) => qrMatrix(t).length);
