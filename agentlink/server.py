@@ -18,7 +18,7 @@ from .history import HistoryStore
 from .lan import LanAccess
 from .tools import INSTRUCTIONS, PAGE_TOOL_NAMES, PAGE_TOOLS, Toolset
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 MCP_PATH = "/agentlink/mcp"
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
 FORMATS = {"openai", "anthropic"}
@@ -193,6 +193,7 @@ class AgentLinkServer:
         routes.post("/agentlink/chat")(self.chat)
         routes.post("/agentlink/events")(self.events)
         routes.post("/agentlink/stop")(self.stop)
+        routes.post("/agentlink/status")(self.status)
         routes.post("/agentlink/reset")(self.reset)
         routes.post("/agentlink/page_result")(self.page_result)
         routes.post(MCP_PATH)(self.mcp)
@@ -479,6 +480,15 @@ class AgentLinkServer:
         else:
             future.set_result(body.get("result"))
         return web.json_response({"accepted": True})
+
+    @local_or_paired
+    async def status(self, request):
+        """Whether a chat is still working, and its latest reply. The phone app polls this while it is in the background."""
+        session = self.sessions.get(str((await request.json()).get("session")))
+        if session is None:
+            return web.json_response({"busy": False, "reply": ""})
+        reply = next((e["text"] for e in reversed(session["events"]) if e["type"] == "text"), "")
+        return web.json_response({"busy": session["busy"], "reply": reply[:300]})
 
     @local_or_paired
     async def stop(self, request):

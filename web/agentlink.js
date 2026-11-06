@@ -17,6 +17,7 @@ const PRESETS = [
 const TEXT = {
   zh: {
     newChat: "新对话", settings: "设置", close: "关闭", send: "发送", stop: "停止", noModel: "未设置模型",
+    needSettings: "电脑上还没设置 AI 模型，请先在电脑的 AgentLink 设置里填写", notPairedApi: "这台设备还没和电脑配对，先打开 AI 助手完成配对", stillBusyApi: "AI 还在处理上一条消息",
     placeholder: "想画什么？例如：海边的猫，夕阳，竖图", hint: "Enter 发送 · Shift+Enter 换行",
     welcome: "我会用你画布上的工作流出图", welcomeSub: "改提示词、调参数、点运行，都交给我。先在画布打开一个工作流。",
     suggestions: ["用当前工作流画一只海边的猫", "把提示词换成夜晚的城市，出 2 张", "当前工作流用的是哪个模型？", "我有哪些 LoRA？"],
@@ -54,6 +55,7 @@ const TEXT = {
   },
   en: {
     newChat: "New chat", settings: "Settings", close: "Close", send: "Send", stop: "Stop", noModel: "No model set",
+    needSettings: "No AI model is set yet; set one in AgentLink settings on the computer", notPairedApi: "This device is not paired with the computer yet; open the AI assistant to pair", stillBusyApi: "The AI is still working on the previous message",
     placeholder: "What should I make? e.g. a cat on a beach at sunset", hint: "Enter to send · Shift+Enter for a new line",
     welcome: "I generate with the workflow on your canvas", welcomeSub: "Prompts, parameters, Run — leave them to me. Open a workflow first.",
     suggestions: ["Draw a cat on a beach with the current workflow", "Switch the prompt to a city at night, make 2", "Which model does this workflow use?", "Which LoRAs do I have?"],
@@ -473,7 +475,7 @@ class AgentLinkPanel {
     this.turnOpen = false;
     this.listenToComfy();
     this.restore();
-    this.init();
+    this.ready = this.init();
     // A phone that slept or switched apps comes back to a reply that kept running on the computer.
     document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && this.resume());
     window.addEventListener("online", () => this.resume());
@@ -926,6 +928,7 @@ class AgentLinkPanel {
 
   setBusy(busy) {
     this.busy = busy;
+    globalThis.dispatchEvent?.(new CustomEvent("agentlink:busy", { detail: { busy, session: this.session } }));
     this.sendButton.classList.toggle("al-busy", busy);
     this.sendButton.replaceChildren(icon(busy ? "stop" : "send"));
     this.sendButton.setAttribute("aria-label", busy ? t("stop") : t("send"));
@@ -1112,6 +1115,9 @@ class AgentLinkPanel {
 
   handle(event, session = this.session) {
     if (session !== this.session) return;
+    // Apps embedding this page (such as ComfyMobile) follow the chat without its window; images stay here.
+    const { image, workflow, ...shared } = event;
+    globalThis.dispatchEvent?.(new CustomEvent("agentlink:event", { detail: { ...shared, session } }));
     if (this.stopped && event.type === 'open_workflow') return;
     if (event.type === "text") {
       this.push({ k: "text", text: event.text });
@@ -1229,13 +1235,18 @@ class FloatingWindow {
     try { localStorage.setItem(GEOMETRY_KEY, JSON.stringify(this.geometry())); } catch { /* not remembered, still works */ }
   }
 
-  toggle(open = this.win.hidden) {
-    if (open && !this.panel) {
+  ensurePanel() {
+    if (!this.panel) {
       this.panel = new AgentLinkPanel();
       this.panel.onClose = () => this.toggle(false);
       this.win.append(this.panel.root);
       for (const handle of this.panel.root.querySelectorAll(".al-drag")) handle.addEventListener("pointerdown", (e) => this.drag(e));
     }
+    return this.panel;
+  }
+
+  toggle(open = this.win.hidden) {
+    if (open) this.ensurePanel();
     if (!open) this.save();
     this.win.hidden = !open;
     this.launcher.classList.toggle("al-on", open);
@@ -1273,6 +1284,25 @@ app.registerExtension({
   name: "AgentLink.Window",
   setup() {
     document.head.append(el("style", {}, CSS));
-    new FloatingWindow();
+    const floating = new FloatingWindow();
+    // For apps that wrap this page (ComfyMobile's simple mode): chat without opening the window. The conversation is
+    // the window's own, so opening it later shows everything; events arrive as "agentlink:event" on window.
+    window.AgentLink = {
+      version: 1,
+      async send(text) {
+        const panel = floating.ensurePanel();
+        await panel.ready;
+        if (!panel.info?.local && !panel.info?.paired) throw new Error(t("notPairedApi"));
+        if (!panel.config?.base_url || !panel.config?.model) throw new Error(t("needSettings"));
+        if (panel.busy) throw new Error(t("stillBusyApi"));
+        panel.input.value = String(text ?? "");
+        panel.send();
+        return { session: panel.session };
+      },
+      stop: () => floating.panel?.stop(),
+      newChat: () => floating.panel?.newChat(),
+      open: () => floating.toggle(true),
+      state: () => ({ busy: !!floating.panel?.busy, session: floating.panel?.session ?? null, open: !floating.win.hidden }),
+    };
   },
 });

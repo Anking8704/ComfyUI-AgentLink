@@ -196,3 +196,18 @@ async def test_a_non_ascii_pairing_code_is_refused_not_a_server_error(setup):
     await desk.post("/agentlink/lan", json={"enabled": True})
     response = await phone.get("/agentlink/pair?code=%E4%B8%AD%E6%96%87", allow_redirects=False)
     assert response.status == 403
+
+
+async def test_status_tells_a_paired_phone_whether_the_chat_is_still_working(setup):
+    server, desk, phone, providers = setup
+    code = (await (await desk.post("/agentlink/lan", json={"enabled": True})).json())["code"]
+    await phone.post("/agentlink/pair", json={"code": code})
+    assert await (await phone.post("/agentlink/status", json={"session": "unknown"})).json() == {"busy": False, "reply": ""}
+    providers.append(ScriptedProvider(Reply("画好了，一只海边的猫。", [])))
+    await (await chat(phone)).text()
+    assert await (await phone.post("/agentlink/status", json={"session": "p1"})).json() == {"busy": False, "reply": "画好了，一只海边的猫。"}
+
+
+async def test_status_is_refused_to_unpaired_devices(setup):
+    _, _, phone, _ = setup
+    assert (await phone.post("/agentlink/status", json={"session": "p1"})).status == 403
